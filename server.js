@@ -91,7 +91,7 @@ async function startServer() {
 
   initializeSocket(io);
 
-  httpServer.listen(PORT, () => {
+httpServer.listen(PORT, '0.0.0.0', () => {
     console.log('=====================================');
     console.log('Nexus Backend Server Started');
     console.log(`Server running on port ${PORT}`);
