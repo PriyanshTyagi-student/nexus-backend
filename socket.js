@@ -5,12 +5,12 @@
 
 const {
   normalizeRoomId,
-  createRoom,
+  createPersistentRoom,
   joinRoom,
   leaveRoom,
   getUsers,
   getOtherUsers,
-  roomExists,
+  persistentRoomExists,
 } = require('./rooms');
 
 // Store user information: socketId -> { userId, roomId, name }
@@ -64,7 +64,7 @@ function initializeSocket(io) {
      * CREATE ROOM
      * Payload: { roomId, userId, name }
      */
-    socket.on('create-room', (data, callback) => {
+    socket.on('create-room', async (data, callback) => {
       const { roomId, userId, name } = data || {};
       const cleanRoomId = normalizeRoomId(roomId);
 
@@ -76,24 +76,36 @@ function initializeSocket(io) {
         return;
       }
 
-      if (roomExists(cleanRoomId)) {
+      try {
+        const result = await createPersistentRoom(cleanRoomId, {
+          createdBy: userId,
+          createdByName: name,
+        });
+
+        if (!result.success) {
+          callback?.({
+            success: false,
+            error: result.error || 'Unable to create room.',
+          });
+          return;
+        }
+
+        const success = completeJoin(cleanRoomId, userId, name);
+        callback?.({ success, roomId: cleanRoomId });
+      } catch (error) {
+        console.error('[CREATE-ROOM] Failed:', error);
         callback?.({
           success: false,
-          error: 'Room already exists. Use Join Room instead.',
+          error: 'Unable to create room.',
         });
-        return;
       }
-
-      createRoom(cleanRoomId);
-      const success = completeJoin(cleanRoomId, userId, name);
-      callback?.({ success, roomId: cleanRoomId });
     });
 
     /**
      * USER JOIN EXISTING ROOM
      * Payload: { roomId, userId, name }
      */
-    socket.on('join-room', (data, callback) => {
+    socket.on('join-room', async (data, callback) => {
       const { roomId, userId, name } = data || {};
       const cleanRoomId = normalizeRoomId(roomId);
 
@@ -105,16 +117,25 @@ function initializeSocket(io) {
         return;
       }
 
-      if (!roomExists(cleanRoomId)) {
+      try {
+        const exists = await persistentRoomExists(cleanRoomId);
+        if (!exists) {
+          callback?.({
+            success: false,
+            error: 'Room does not exist. Create it first.',
+          });
+          return;
+        }
+
+        const success = completeJoin(cleanRoomId, userId, name);
+        callback?.({ success, roomId: cleanRoomId });
+      } catch (error) {
+        console.error('[JOIN-ROOM] Failed:', error);
         callback?.({
           success: false,
-          error: 'Room does not exist. Create it first.',
+          error: 'Unable to join room.',
         });
-        return;
       }
-
-      const success = completeJoin(cleanRoomId, userId, name);
-      callback?.({ success, roomId: cleanRoomId });
     });
 
     /**

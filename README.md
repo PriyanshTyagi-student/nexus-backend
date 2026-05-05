@@ -183,22 +183,28 @@ Create a `.env` file in the backend directory:
 ```env
 PORT=5000
 NODE_ENV=development
+MONGODB_URI=mongodb://127.0.0.1:27017/nexus
+MONGODB_DB=nexus
 ```
+
+`MONGODB_URI` can point to a local MongoDB server or MongoDB Atlas. Created rooms are stored in the `rooms` collection with a unique `roomId`, creator metadata, timestamps, and `isActive`.
 
 ## Dependencies
 
 - **express** - Web framework
 - **socket.io** - Real-time communication
 - **cors** - Cross-Origin Resource Sharing
+- **mongodb** - MongoDB driver for persistent rooms
+- **dotenv** - Loads local `.env` configuration
 - **nodemon** (dev) - Auto-restart on file changes
 
 ## Architecture
 
 ### Room Management (`rooms.js`)
-- Stores active rooms in a Map
-- Each room contains a Set of socket IDs
-- Automatic cleanup of empty rooms
-- Functions for room operations (create, join, leave, get users)
+- Stores active users in each room in memory
+- Persists created room records in MongoDB
+- Checks MongoDB when users join an existing room
+- Removes empty rooms from active memory without deleting the MongoDB room record
 
 ### Socket Handler (`socket.js`)
 - Manages all real-time events

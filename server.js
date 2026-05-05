@@ -3,11 +3,14 @@
  * Real-time communication server using Express and Socket.io
  */
 
+require('dotenv').config();
+
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const initializeSocket = require('./socket');
+const { connectDatabase, closeDatabase } = require('./db');
 
 // Initialize Express app
 const app = express();
@@ -15,6 +18,7 @@ const httpServer = createServer(app);
 
 // Port configuration
 const PORT = process.env.PORT || 5000;
+let databaseConnected = false;
 
 // Middleware
 app.use(
@@ -34,9 +38,6 @@ const io = new Server(httpServer, {
   },
   transports: ['websocket', 'polling'],
 });
-
-// Initialize socket event handlers
-initializeSocket(io);
 
 /**
  * ROUTES
@@ -58,6 +59,7 @@ app.get('/status', (req, res) => {
     server: 'Nexus Backend',
     uptime: process.uptime(),
     connectedClients: io.engine.clientsCount,
+    database: databaseConnected ? 'connected' : 'disabled',
     timestamp: new Date(),
   });
 });
@@ -83,13 +85,26 @@ app.use((req, res) => {
  * SERVER STARTUP
  */
 
-httpServer.listen(PORT, () => {
-  console.log('=====================================');
-  console.log('🚀 Nexus Backend Server Started');
-  console.log(`📍 Server running on port ${PORT}`);
-  console.log(`🌐 API: http://localhost:${PORT}`);
-  console.log(`📡 WebSocket: ws://localhost:${PORT}`);
-  console.log('=====================================\n');
+async function startServer() {
+  const database = await connectDatabase();
+  databaseConnected = Boolean(database);
+
+  initializeSocket(io);
+
+  httpServer.listen(PORT, () => {
+    console.log('=====================================');
+    console.log('Nexus Backend Server Started');
+    console.log(`Server running on port ${PORT}`);
+    console.log(`API: http://localhost:${PORT}`);
+    console.log(`WebSocket: ws://localhost:${PORT}`);
+    console.log(`MongoDB: ${databaseConnected ? 'connected' : 'disabled'}`);
+    console.log('=====================================\n');
+  });
+}
+
+startServer().catch((error) => {
+  console.error('[STARTUP] Failed to start server:', error);
+  process.exit(1);
 });
 
 /**
@@ -98,7 +113,8 @@ httpServer.listen(PORT, () => {
 
 process.on('SIGTERM', () => {
   console.log('[SHUTDOWN] SIGTERM received, shutting down gracefully');
-  httpServer.close(() => {
+  httpServer.close(async () => {
+    await closeDatabase();
     console.log('[SHUTDOWN] Server closed');
     process.exit(0);
   });
@@ -106,7 +122,8 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   console.log('[SHUTDOWN] SIGINT received, shutting down gracefully');
-  httpServer.close(() => {
+  httpServer.close(async () => {
+    await closeDatabase();
     console.log('[SHUTDOWN] Server closed');
     process.exit(0);
   });

@@ -8,13 +8,20 @@
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
-  "keywords": ["real-time", "communication", "socket.io", "webrtc"],
+  "keywords": [
+    "real-time",
+    "communication",
+    "socket.io",
+    "webrtc"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^4.18.2",
-    "socket.io": "^4.7.2",
-    "cors": "^2.8.5"
+    "mongodb": "^7.2.0",
+    "socket.io": "^4.7.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
