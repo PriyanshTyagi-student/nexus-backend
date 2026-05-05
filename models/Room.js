@@ -10,6 +10,13 @@ const roomSchema = new mongoose.Schema(
       lowercase: true,
       index: true,
     },
+    secretCode: {
+      type: String,
+      required: true,
+      unique: true,
+      minlength: 6,
+      maxlength: 6,
+    },
     users: {
       type: [String],
       default: [],
@@ -25,3 +32,4 @@ const roomSchema = new mongoose.Schema(
 );
 
 module.exports = mongoose.models.Room || mongoose.model('Room', roomSchema);
+
