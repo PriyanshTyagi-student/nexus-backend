@@ -1,18 +1,20 @@
-const { MongoClient } = require('mongodb');
+const mongoose = require('mongoose');
 
 const DEFAULT_DB_NAME = 'nexus';
 
-let client;
-let db;
 let connectionFailed = false;
 
 function getMongoUri() {
   return process.env.MONGODB_URI || process.env.MONGO_URI || '';
 }
 
+function getDatabaseName() {
+  return process.env.MONGODB_DB || DEFAULT_DB_NAME;
+}
+
 async function connectDatabase() {
-  if (db) {
-    return db;
+  if (mongoose.connection.readyState === 1) {
+    return mongoose.connection;
   }
 
   if (connectionFailed) {
@@ -26,20 +28,14 @@ async function connectDatabase() {
   }
 
   try {
-    client = new MongoClient(uri);
-    await client.connect();
+    await mongoose.connect(uri, {
+      dbName: getDatabaseName(),
+    });
 
-    const dbName = process.env.MONGODB_DB || DEFAULT_DB_NAME;
-    db = client.db(dbName);
-
-    await db.collection('rooms').createIndex({ roomId: 1 }, { unique: true });
-    console.log(`[DB] Connected to MongoDB database: ${dbName}`);
-
-    return db;
+    console.log(`[DB] Connected to MongoDB database: ${getDatabaseName()}`);
+    return mongoose.connection;
   } catch (error) {
     connectionFailed = true;
-    client = null;
-    db = null;
 
     if (error?.codeName === 'AtlasError' || error?.code === 8000) {
       console.error(
@@ -53,22 +49,20 @@ async function connectDatabase() {
   }
 }
 
-async function getDatabase() {
-  return db || connectDatabase();
+function isDatabaseConnected() {
+  return mongoose.connection.readyState === 1;
 }
 
 async function closeDatabase() {
-  if (client) {
-    await client.close();
+  if (mongoose.connection.readyState !== 0) {
+    await mongoose.disconnect();
   }
 
-  client = null;
-  db = null;
   connectionFailed = false;
 }
 
 module.exports = {
   connectDatabase,
-  getDatabase,
+  isDatabaseConnected,
   closeDatabase,
 };

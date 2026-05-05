@@ -187,14 +187,14 @@ MONGODB_URI=mongodb://127.0.0.1:27017/nexus
 MONGODB_DB=nexus
 ```
 
-`MONGODB_URI` can point to a local MongoDB server or MongoDB Atlas. Created rooms are stored in the `rooms` collection with a unique `roomId`, creator metadata, timestamps, and `isActive`.
+`MONGODB_URI` can point to a local MongoDB server or MongoDB Atlas. Created rooms are stored in the `rooms` collection, and chat history is stored in the `messages` collection.
 
 ## Dependencies
 
 - **express** - Web framework
 - **socket.io** - Real-time communication
 - **cors** - Cross-Origin Resource Sharing
-- **mongodb** - MongoDB driver for persistent rooms
+- **mongoose** - MongoDB object modeling for rooms and messages
 - **dotenv** - Loads local `.env` configuration
 - **nodemon** (dev) - Auto-restart on file changes
 
@@ -202,9 +202,14 @@ MONGODB_DB=nexus
 
 ### Room Management (`rooms.js`)
 - Stores active users in each room in memory
-- Persists created room records in MongoDB
+- Persists created room records in MongoDB with Mongoose
 - Checks MongoDB when users join an existing room
-- Removes empty rooms from active memory without deleting the MongoDB room record
+- Removes users from MongoDB on disconnect
+- Deletes empty rooms after a short reconnect grace period
+
+### Models
+- `models/Room.js` - `{ roomId, users, createdAt }`
+- `models/Message.js` - `{ roomId, userId, message, timestamp }`
 
 ### Socket Handler (`socket.js`)
 - Manages all real-time events

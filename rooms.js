@@ -1,50 +1,84 @@
 /**
  * Room Management System
- * Manages rooms and users in each room
+ * Manages persisted room membership and live socket presence.
  */
 
-const { getDatabase } = require('./db');
+const Room = require('./models/Room');
+const { isDatabaseConnected } = require('./db');
 
-// Store rooms: roomId -> Set of socketIds
+const EMPTY_ROOM_DELETE_DELAY_MS = 30000;
+
+// Store active sockets: roomId -> Set of socketIds
 const rooms = new Map();
+const cleanupTimers = new Map();
 
-/**
- * Normalize room ID for consistency
- * @param {string} roomId - Raw room identifier
- * @returns {string} Normalized room ID (trimmed and lowercase)
- */
 function normalizeRoomId(roomId) {
   if (!roomId || typeof roomId !== 'string') {
     return '';
   }
+
   return roomId.trim().toLowerCase();
 }
 
-/**
- * Create a new room
- * @param {string} roomId - Unique identifier for the room
- */
 function createRoom(roomId) {
   const cleanId = normalizeRoomId(roomId);
   if (!cleanId) {
-    console.warn(`[ROOM] Cannot create room with empty ID`);
+    console.warn('[ROOM] Cannot create room with empty ID');
     return false;
   }
 
   if (!rooms.has(cleanId)) {
     rooms.set(cleanId, new Set());
-    console.log(`[ROOM] Created room: ${cleanId}`);
+    console.log(`[ROOM] Created active room: ${cleanId}`);
     return true;
   }
+
   return false;
 }
 
-/**
- * Persist a newly created room in MongoDB.
- * Falls back to in-memory creation when MongoDB is not configured.
- */
+function cancelRoomCleanup(roomId) {
+  const cleanId = normalizeRoomId(roomId);
+  const timer = cleanupTimers.get(cleanId);
+  if (timer) {
+    clearTimeout(timer);
+    cleanupTimers.delete(cleanId);
+  }
+}
+
+function scheduleRoomCleanup(roomId) {
+  const cleanId = normalizeRoomId(roomId);
+  if (!cleanId || cleanupTimers.has(cleanId)) {
+    return;
+  }
+
+  const timer = setTimeout(async () => {
+    cleanupTimers.delete(cleanId);
+
+    const activeUsers = getUsers(cleanId);
+    if (activeUsers.length > 0) {
+      return;
+    }
+
+    try {
+      if (isDatabaseConnected()) {
+        const room = await Room.findOne({ roomId: cleanId }).lean();
+        if (room && room.users.length === 0) {
+          await Room.deleteOne({ roomId: cleanId });
+          console.log(`[ROOM] Deleted empty persisted room: ${cleanId}`);
+        }
+      }
+    } catch (error) {
+      console.error('[ROOM] Failed to clean up empty room:', error);
+    }
+  }, EMPTY_ROOM_DELETE_DELAY_MS);
+
+  cleanupTimers.set(cleanId, timer);
+}
+
 async function createPersistentRoom(roomId, metadata = {}) {
   const cleanId = normalizeRoomId(roomId);
+  const userId = metadata.createdBy;
+
   if (!cleanId) {
     return {
       success: false,
@@ -53,8 +87,7 @@ async function createPersistentRoom(roomId, metadata = {}) {
     };
   }
 
-  const database = await getDatabase();
-  if (!database) {
+  if (!isDatabaseConnected()) {
     if (rooms.has(cleanId)) {
       return {
         success: false,
@@ -63,24 +96,21 @@ async function createPersistentRoom(roomId, metadata = {}) {
       };
     }
 
-    const created = createRoom(cleanId);
-    return { success: true, created };
+    createRoom(cleanId);
+    return { success: true, created: true };
   }
 
   try {
-    const now = new Date();
-    const result = await database.collection('rooms').insertOne({
+    const room = await Room.create({
       roomId: cleanId,
-      createdBy: metadata.createdBy || null,
-      createdByName: metadata.createdByName || null,
-      createdAt: now,
-      updatedAt: now,
-      isActive: true,
+      users: userId ? [userId] : [],
+      createdAt: new Date(),
     });
 
+    cancelRoomCleanup(cleanId);
     createRoom(cleanId);
     console.log(`[ROOM] Persisted room: ${cleanId}`);
-    return { success: true, created: Boolean(result.insertedId) };
+    return { success: true, created: Boolean(room) };
   } catch (error) {
     if (error?.code === 11000) {
       return {
@@ -99,31 +129,56 @@ async function createPersistentRoom(roomId, metadata = {}) {
   }
 }
 
-/**
- * Add a user (socket) to a room
- * @param {string} roomId - Room identifier
- * @param {string} socketId - Socket identifier
- */
+async function addUserToPersistentRoom(roomId, userId) {
+  const cleanId = normalizeRoomId(roomId);
+  if (!cleanId || !userId) {
+    return false;
+  }
+
+  if (!isDatabaseConnected()) {
+    return true;
+  }
+
+  const result = await Room.updateOne(
+    { roomId: cleanId },
+    { $addToSet: { users: userId } }
+  );
+
+  return result.matchedCount > 0;
+}
+
+async function removeUserFromPersistentRoom(roomId, userId) {
+  const cleanId = normalizeRoomId(roomId);
+  if (!cleanId || !userId || !isDatabaseConnected()) {
+    return;
+  }
+
+  await Room.updateOne({ roomId: cleanId }, { $pull: { users: userId } });
+
+  const room = await Room.findOne({ roomId: cleanId }).lean();
+  if (room && room.users.length === 0) {
+    scheduleRoomCleanup(cleanId);
+  }
+}
+
 function joinRoom(roomId, socketId) {
   const cleanId = normalizeRoomId(roomId);
   if (!cleanId) {
-    console.warn(`[ROOM] Cannot join room with empty ID`);
+    console.warn('[ROOM] Cannot join room with empty ID');
     return false;
   }
+
+  cancelRoomCleanup(cleanId);
 
   if (!rooms.has(cleanId)) {
     createRoom(cleanId);
   }
+
   rooms.get(cleanId).add(socketId);
   console.log(`[ROOM] Socket ${socketId} joined room ${cleanId}`);
   return true;
 }
 
-/**
- * Remove a user (socket) from a room
- * @param {string} roomId - Room identifier
- * @param {string} socketId - Socket identifier
- */
 function leaveRoom(roomId, socketId) {
   const cleanId = normalizeRoomId(roomId);
   if (!cleanId || !rooms.has(cleanId)) {
@@ -133,50 +188,33 @@ function leaveRoom(roomId, socketId) {
   rooms.get(cleanId).delete(socketId);
   console.log(`[ROOM] Socket ${socketId} left room ${cleanId}`);
 
-  // Delete room if empty
   if (rooms.get(cleanId).size === 0) {
     rooms.delete(cleanId);
-    console.log(`[ROOM] Deleted empty room: ${cleanId}`);
+    scheduleRoomCleanup(cleanId);
+    console.log(`[ROOM] Active room is empty: ${cleanId}`);
   }
+
   return true;
 }
 
-/**
- * Get all users (socket IDs) in a room
- * @param {string} roomId - Room identifier
- * @returns {Array<string>} Array of socket IDs in the room
- */
 function getUsers(roomId) {
   const cleanId = normalizeRoomId(roomId);
   if (cleanId && rooms.has(cleanId)) {
     return Array.from(rooms.get(cleanId));
   }
+
   return [];
 }
 
-/**
- * Get all users except a specific socket
- * @param {string} roomId - Room identifier
- * @param {string} socketId - Socket to exclude
- * @returns {Array<string>} Array of socket IDs excluding the specified socket
- */
 function getOtherUsers(roomId, socketId) {
   return getUsers(roomId).filter((id) => id !== socketId);
 }
 
-/**
- * Check if a room exists
- * @param {string} roomId - Room identifier
- * @returns {boolean}
- */
 function roomExists(roomId) {
   const cleanId = normalizeRoomId(roomId);
-  return cleanId && rooms.has(cleanId);
+  return Boolean(cleanId && rooms.has(cleanId));
 }
 
-/**
- * Check MongoDB and in-memory state for a room.
- */
 async function persistentRoomExists(roomId) {
   const cleanId = normalizeRoomId(roomId);
   if (!cleanId) {
@@ -187,15 +225,11 @@ async function persistentRoomExists(roomId) {
     return true;
   }
 
-  const database = await getDatabase();
-  if (!database) {
+  if (!isDatabaseConnected()) {
     return false;
   }
 
-  const room = await database
-    .collection('rooms')
-    .findOne({ roomId: cleanId, isActive: true }, { projection: { _id: 1 } });
-
+  const room = await Room.findOne({ roomId: cleanId }).lean();
   if (room) {
     createRoom(cleanId);
     return true;
@@ -204,10 +238,6 @@ async function persistentRoomExists(roomId) {
   return false;
 }
 
-/**
- * Get room count
- * @returns {number}
- */
 function getRoomCount() {
   return rooms.size;
 }
@@ -216,6 +246,8 @@ module.exports = {
   normalizeRoomId,
   createRoom,
   createPersistentRoom,
+  addUserToPersistentRoom,
+  removeUserFromPersistentRoom,
   joinRoom,
   leaveRoom,
   getUsers,

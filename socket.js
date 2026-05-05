@@ -6,12 +6,16 @@
 const {
   normalizeRoomId,
   createPersistentRoom,
+  addUserToPersistentRoom,
   joinRoom,
   leaveRoom,
   getUsers,
   getOtherUsers,
+  removeUserFromPersistentRoom,
   persistentRoomExists,
 } = require('./rooms');
+const Message = require('./models/Message');
+const { isDatabaseConnected } = require('./db');
 
 // Store user information: socketId -> { userId, roomId, name }
 const userSessions = new Map();
@@ -24,10 +28,51 @@ function initializeSocket(io) {
   io.on('connection', (socket) => {
     console.log(`[CONNECTION] User connected: ${socket.id}`);
 
-    const completeJoin = (roomId, userId, name) => {
+    const removeSessionFromRoom = async (session) => {
+      const { roomId, userId, name } = session;
+
+      leaveRoom(roomId, socket.id);
+      await removeUserFromPersistentRoom(roomId, userId);
+
+      socket.to(roomId).emit('user-left', {
+        socketId: socket.id,
+        userId,
+        name,
+      });
+
+      userSessions.delete(socket.id);
+    };
+
+    const getPreviousMessages = async (roomId) => {
+      if (!isDatabaseConnected()) {
+        return [];
+      }
+
+      const cleanRoomId = normalizeRoomId(roomId);
+      const messages = await Message.find({ roomId: cleanRoomId })
+        .sort({ timestamp: 1 })
+        .limit(100)
+        .lean();
+
+      return messages.map((item) => ({
+        id: item._id.toString(),
+        roomId: item.roomId,
+        userId: item.userId,
+        name: item.userId,
+        message: item.message,
+        timestamp: item.timestamp,
+      }));
+    };
+
+    const completeJoin = async (roomId, userId, name) => {
       const cleanRoomId = normalizeRoomId(roomId);
       if (!cleanRoomId) {
         console.warn(`[JOIN] Cannot join room with empty ID`);
+        return false;
+      }
+
+      const added = await addUserToPersistentRoom(cleanRoomId, userId);
+      if (!added) {
         return false;
       }
 
@@ -48,6 +93,11 @@ function initializeSocket(io) {
               name: session?.name,
             };
           }),
+      });
+
+      socket.emit('previous-messages', {
+        roomId: cleanRoomId,
+        messages: await getPreviousMessages(cleanRoomId),
       });
 
       socket.to(cleanRoomId).emit('user-joined', {
@@ -90,7 +140,7 @@ function initializeSocket(io) {
           return;
         }
 
-        const success = completeJoin(cleanRoomId, userId, name);
+        const success = await completeJoin(cleanRoomId, userId, name);
         callback?.({ success, roomId: cleanRoomId });
       } catch (error) {
         console.error('[CREATE-ROOM] Failed:', error);
@@ -127,7 +177,7 @@ function initializeSocket(io) {
           return;
         }
 
-        const success = completeJoin(cleanRoomId, userId, name);
+        const success = await completeJoin(cleanRoomId, userId, name);
         callback?.({ success, roomId: cleanRoomId });
       } catch (error) {
         console.error('[JOIN-ROOM] Failed:', error);
@@ -142,7 +192,7 @@ function initializeSocket(io) {
      * SEND MESSAGE
      * Payload: { roomId, userId, message, timestamp }
      */
-    socket.on('send-message', (data) => {
+    socket.on('send-message', async (data) => {
       const { roomId, userId, message, timestamp } = data;
       const cleanRoomId = normalizeRoomId(roomId);
       const session = userSessions.get(socket.id);
@@ -152,13 +202,37 @@ function initializeSocket(io) {
         return;
       }
 
+      if (!message || typeof message !== 'string' || !message.trim()) {
+        return;
+      }
+
+      const messageTime = timestamp ? new Date(timestamp) : new Date();
+      let messageId = `msg-${Date.now()}-${Math.random()}`;
+
+      if (isDatabaseConnected()) {
+        try {
+          const savedMessage = await Message.create({
+            roomId: cleanRoomId,
+            userId,
+            message: message.trim(),
+            timestamp: messageTime,
+          });
+
+          messageId = savedMessage._id.toString();
+        } catch (error) {
+          console.error('[MESSAGE] Failed to persist message:', error);
+          return;
+        }
+      }
+
       // Emit to all users in room (including sender)
       io.to(cleanRoomId).emit('receive-message', {
+        id: messageId,
         socketId: socket.id,
         userId,
         name: session.name,
-        message,
-        timestamp: timestamp || new Date(),
+        message: message.trim(),
+        timestamp: messageTime,
       });
 
       console.log(`[MESSAGE] ${session.name}: ${message}`);
@@ -270,7 +344,7 @@ function initializeSocket(io) {
      * LEAVE ROOM
      * Payload: { roomId }
      */
-    socket.on('leave-room', (data, callback) => {
+    socket.on('leave-room', async (data, callback) => {
       const { roomId } = data || {};
       const cleanRoomId = normalizeRoomId(roomId);
       const session = userSessions.get(socket.id);
@@ -288,17 +362,11 @@ function initializeSocket(io) {
         return;
       }
 
-      const { userId, name } = session;
-      leaveRoom(cleanRoomId, socket.id);
+      const { name } = session;
+      await removeSessionFromRoom(session);
       socket.leave(cleanRoomId);
-      socket.to(cleanRoomId).emit('user-left', {
-        socketId: socket.id,
-        userId,
-        name,
-      });
-      userSessions.delete(socket.id);
 
-      console.log(`[LEAVE-ROOM] ${name} (${userId}) left room ${cleanRoomId}`);
+      console.log(`[LEAVE-ROOM] ${name} (${session.userId}) left room ${cleanRoomId}`);
       callback?.({ success: true });
     });
 
@@ -306,26 +374,18 @@ function initializeSocket(io) {
      * DISCONNECT
      * Handle user disconnect
      */
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       const session = userSessions.get(socket.id);
 
       if (session) {
-        const { roomId, userId, name } = session;
-
-        // Remove from room
-        leaveRoom(roomId, socket.id);
-
-        // Notify others
-        socket.to(roomId).emit('user-left', {
-          socketId: socket.id,
-          userId,
-          name,
-        });
-
-        // Clean up user session
-        userSessions.delete(socket.id);
-
-        console.log(`[DISCONNECT] ${name} (${userId}) disconnected from ${roomId}`);
+        try {
+          await removeSessionFromRoom(session);
+          console.log(
+            `[DISCONNECT] ${session.name} (${session.userId}) disconnected from ${session.roomId}`
+          );
+        } catch (error) {
+          console.error('[DISCONNECT] Failed to remove user session:', error);
+        }
       } else {
         console.log(`[DISCONNECT] Unknown user ${socket.id} disconnected`);
       }
