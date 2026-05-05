@@ -1,0 +1,128 @@
+/**
+ * Nexus Backend Server
+ * Real-time communication server using Express and Socket.io
+ */
+
+const express = require('express');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const initializeSocket = require('./socket');
+
+// Initialize Express app
+const app = express();
+const httpServer = createServer(app);
+
+// Port configuration
+const PORT = process.env.PORT || 5000;
+
+// Middleware
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
+app.use(express.json());
+
+// Initialize Socket.io with CORS
+const io = new Server(httpServer, {
+  cors: {
+    origin: true,
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
+  transports: ['websocket', 'polling'],
+});
+
+// Initialize socket event handlers
+initializeSocket(io);
+
+/**
+ * ROUTES
+ */
+
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.json({
+    status: 'success',
+    message: 'Nexus Backend is running',
+    timestamp: new Date(),
+  });
+});
+
+// Status endpoint
+app.get('/status', (req, res) => {
+  res.json({
+    status: 'success',
+    server: 'Nexus Backend',
+    uptime: process.uptime(),
+    connectedClients: io.engine.clientsCount,
+    timestamp: new Date(),
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('[ERROR]', err);
+  res.status(500).json({
+    status: 'error',
+    message: 'Internal server error',
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: 'Route not found',
+  });
+});
+
+/**
+ * SERVER STARTUP
+ */
+
+httpServer.listen(PORT, () => {
+  console.log('=====================================');
+  console.log('🚀 Nexus Backend Server Started');
+  console.log(`📍 Server running on port ${PORT}`);
+  console.log(`🌐 API: http://localhost:${PORT}`);
+  console.log(`📡 WebSocket: ws://localhost:${PORT}`);
+  console.log('=====================================\n');
+});
+
+/**
+ * GRACEFUL SHUTDOWN
+ */
+
+process.on('SIGTERM', () => {
+  console.log('[SHUTDOWN] SIGTERM received, shutting down gracefully');
+  httpServer.close(() => {
+    console.log('[SHUTDOWN] Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('[SHUTDOWN] SIGINT received, shutting down gracefully');
+  httpServer.close(() => {
+    console.log('[SHUTDOWN] Server closed');
+    process.exit(0);
+  });
+});
+
+/**
+ * UNCAUGHT EXCEPTION HANDLER
+ */
+
+process.on('uncaughtException', (error) => {
+  console.error('[FATAL ERROR]', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[UNHANDLED REJECTION]', reason);
+});
+
+module.exports = httpServer;
