@@ -12,11 +12,9 @@ const roomSchema = new mongoose.Schema(
     },
     secretCode: {
       type: String,
-      required: true,
-      unique: true,
-      minlength: 6,
-      maxlength: 6,
+      default: null,
     },
+
     users: {
       type: [String],
       default: [],

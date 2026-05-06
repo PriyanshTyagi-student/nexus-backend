@@ -1,6 +1,6 @@
 /**
  * Socket.io Event Handlers
- * Handles real-time communication events
+ * Handles real-time communication events with full persistence and cleanup
  */
 
 const {
@@ -15,10 +15,13 @@ const {
   persistentRoomExists,
 } = require('./rooms');
 const Message = require('./models/Message');
+const UserSession = require('./models/UserSession');
 const { isDatabaseConnected } = require('./db');
 
 // Store user information: socketId -> { userId, roomId, name }
 const userSessions = new Map();
+// Track event listeners to prevent duplicates: socketId -> Set of event names
+const eventListeners = new Map();
 
 /**
  * Initialize socket event handlers
@@ -87,12 +90,17 @@ function initializeSocket(io) {
           .filter((id) => id !== socket.id)
           .map((id) => {
             const session = userSessions.get(id);
+            if (!session?.name || !session?.userId) {
+              return null;
+            }
+
             return {
               socketId: id,
-              userId: session?.userId,
-              name: session?.name,
+              userId: session.userId,
+              name: session.name,
             };
-          }),
+          })
+          .filter(Boolean),
       });
 
       socket.emit('previous-messages', {

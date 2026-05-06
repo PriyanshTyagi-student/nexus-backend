@@ -45,34 +45,9 @@ function cancelRoomCleanup(roomId) {
   }
 }
 
+// DISABLED: Rooms now permanent - no auto cleanup
 function scheduleRoomCleanup(roomId) {
-  const cleanId = normalizeRoomId(roomId);
-  if (!cleanId || cleanupTimers.has(cleanId)) {
-    return;
-  }
-
-  const timer = setTimeout(async () => {
-    cleanupTimers.delete(cleanId);
-
-    const activeUsers = getUsers(cleanId);
-    if (activeUsers.length > 0) {
-      return;
-    }
-
-    try {
-      if (isDatabaseConnected()) {
-        const room = await Room.findOne({ roomId: cleanId }).lean();
-        if (room && room.users.length === 0) {
-          await Room.deleteOne({ roomId: cleanId });
-          console.log(`[ROOM] Deleted empty persisted room: ${cleanId}`);
-        }
-      }
-    } catch (error) {
-      console.error('[ROOM] Failed to clean up empty room:', error);
-    }
-  }, EMPTY_ROOM_DELETE_DELAY_MS);
-
-  cleanupTimers.set(cleanId, timer);
+  // Rooms are permanent forever
 }
 
 async function createPersistentRoom(roomId, metadata = {}) {
@@ -103,9 +78,11 @@ async function createPersistentRoom(roomId, metadata = {}) {
   try {
     const room = await Room.create({
       roomId: cleanId,
+      secretCode: cleanId.slice(0,6).toUpperCase(),
       users: userId ? [userId] : [],
       createdAt: new Date(),
     });
+
 
     cancelRoomCleanup(cleanId);
     createRoom(cleanId);
@@ -154,11 +131,7 @@ async function removeUserFromPersistentRoom(roomId, userId) {
   }
 
   await Room.updateOne({ roomId: cleanId }, { $pull: { users: userId } });
-
-  const room = await Room.findOne({ roomId: cleanId }).lean();
-  if (room && room.users.length === 0) {
-    scheduleRoomCleanup(cleanId);
-  }
+  // No room deletion - rooms permanent
 }
 
 function joinRoom(roomId, socketId) {
